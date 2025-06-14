@@ -12,3 +12,7 @@ headers = {
     "Pragma": "no-cache",
     "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits"
 }
+
+# New config options for flash sound
+PLAY_FLASH_ON_START = False  # Set to False to disable flash sound at startup
+FLASH_VOLUME = 0.08  # 10% volume (0.0 to 1.0)

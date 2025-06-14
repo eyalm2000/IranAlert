@@ -1,7 +1,7 @@
 import websocket
 import time
 import json
-from config import first_req, first_res, second_res, headers
+from config import first_req, first_res, second_res, headers, PLAY_FLASH_ON_START, FLASH_VOLUME
 from openai import AzureOpenAI
 from azure.core.credentials import AzureKeyCredential
 import os
@@ -9,6 +9,20 @@ from playsound import playsound
 import tkinter as tk
 from tkinter import messagebox
 from win10toast import ToastNotifier
+import pygame
+
+def rtl_print(*args, **kwargs):
+    sep = kwargs.get('sep', ' ')
+    end = kwargs.get('end', '\n')
+    msg = sep.join(str(a) for a in args)
+    # Print to terminal (may be garbled in PowerShell)
+    print(msg, end=end)
+    # Also write to a UTF-8 log file for correct RTL viewing
+    try:
+        with open('rtl_log.txt', 'a', encoding='utf-8') as f:
+            f.write(msg + end)
+    except Exception as e:
+        print(f"[rtl_print log error]: {e}")
 
 endpoint = "https://iran-dont-shoot-resource.cognitiveservices.azure.com/"
 deployment = "gpt-4.1"
@@ -31,6 +45,20 @@ try:
     print("[Windows notification test sent]")
 except Exception as e:
     print(f"[Windows notification test failed]: {e}")
+
+# Play flash sound at startup if enabled in config
+if PLAY_FLASH_ON_START:
+    try:
+        pygame.mixer.init()
+        pygame.mixer.music.set_volume(FLASH_VOLUME)
+        pygame.mixer.music.load('flash.mp3')
+        pygame.mixer.music.play()
+        print(f"[Startup] Playing flash.mp3 at {int(FLASH_VOLUME*100)}% volume")
+        # Wait for sound to finish (non-blocking)
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.1)
+    except Exception as e:
+        print(f"[Startup] Failed to play flash.mp3: {e}")
 
 # --- Azure OpenAI API test at startup ---
 def test_azure_openai():
@@ -114,7 +142,7 @@ def handle_json_message(ws, msg_obj):
                 # Print message content if available
                 message_content = d.get("messageContent", None)
                 if message_content:
-                    print(f"Message: {message_content}")
+                    rtl_print(f"Message: {message_content}")
                 # Print media links if available
                 medias = d.get("medias", {})
                 if medias:
@@ -122,13 +150,13 @@ def handle_json_message(ws, msg_obj):
                         media_content = media.get('mediaContent', '')
                         video_link = media.get('link1', '')
                         thumbnail = media.get('thumbnail', '')
-                        print(f"Media: {media_content}")
-                        print(f"Video: {video_link}")
-                        print(f"Thumbnail: {thumbnail}")
+                        rtl_print(f"Media: {media_content}")
+                        rtl_print(f"Video: {video_link}")
+                        rtl_print(f"Thumbnail: {thumbnail}")
                         # Extract text from mediaContent for further processing
                         if media_content:
                             try:
-                                system_prompt = "אתה AI שהולך לקבל דיוווח חדשות מתפרץ. עליך להחליט אם הדיווח רלוונטי ל: הודעה מפיקוד העורף או מגוף צבאי אחר בנושא איום לכיוון ישראל (למשל טילים בליסטים, כטבמים או איומים אחרים שמשמעותיים בזמן הקצר). עליך להגיב בJSON באופן הבא: { isFlagged: True/False, MessageTitle: '...', MessageDescription: '...' } התגובה שלך תכלול רק את ה-JSON."
+                                system_prompt = "אתה AI שהולך לקבל דיוווח חדשות מתפרץ. עליך להחליט אם הדיווח רלוונטי ל: הודעה מפיקוד העורף או מגוף צבאי אחר בנושא איום לכיוון ישראל (למשל טילים בליסטים, כטבמים או איומים אחרים שמשמעותיים בזמן הקצר). עליך להגיב בJSON באופן הבא: { isFlagged: True/False, MessageTitle: '...', MessageDescription: '...' } התגובה שלך תכלול רק את ה-JSON. אם isFlagged הוא False, השאר את הערכים של MessageTitle ו-MessageDescription עם סטרינג ריק."
                                 user_prompt = f"New news report: {media_content}"
                                 response = client.chat.completions.create(
                                     messages=[
@@ -143,7 +171,7 @@ def handle_json_message(ws, msg_obj):
                                     model=deployment
                                 )
                                 ai_content = response.choices[0].message.content
-                                print(f"AI Response: {ai_content}")
+                                rtl_print(f"AI Response: {ai_content}")
                                 # Remove markdown and whitespace from Azure response
                                 ai_content = ai_content.strip()
                                 if ai_content.startswith('```json'):
@@ -154,16 +182,33 @@ def handle_json_message(ws, msg_obj):
                                     ai_content = ai_content[:-len('```')].strip()
                                 # Fix common JSON issues from AI output
                                 ai_content = ai_content.replace("True", "true").replace("False", "false")
+                                # Escape unescaped double quotes inside string values (e.g., כטב"מים)
+                                import re
+                                def escape_inner_quotes(s):
+                                    # Only escape quotes inside values, not keys or delimiters
+                                    def replacer(match):
+                                        inner = match.group(0)
+                                        # Replace unescaped double quotes with escaped
+                                        return inner.replace('"', '\\"')
+                                    # Regex: find ": "..." (value) and escape inner quotes
+                                    return re.sub(r':\s*"([^"]*?)(?<!\\)"([^"]*?)"', lambda m: ': "' + m.group(1).replace('"', '\\"') + '"' + m.group(2).replace('"', '\\"') + '"', s)
+                                ai_content = escape_inner_quotes(ai_content)
                                 try:
                                     result = json.loads(ai_content)
                                 except Exception as e:
-                                    print(f"[JSON ERROR] Could not parse AI response: {ai_content}")
-                                    print(f"[JSON ERROR] Exception: {e}")
+                                    rtl_print(f"[JSON ERROR] Could not parse AI response: {ai_content}")
+                                    rtl_print(f"[JSON ERROR] Exception: {e}")
                                     return
                                 if result.get("isFlagged"):
-                                    print('CRITICAL NEWS DETECTED!')
+                                    rtl_print('CRITICAL NEWS DETECTED!')
                                     try:
-                                        playsound('flash.mp3')
+                                        pygame.mixer.init()
+                                        pygame.mixer.music.set_volume(FLASH_VOLUME)
+                                        pygame.mixer.music.load('flash.mp3')
+                                        pygame.mixer.music.play()
+                                        print(f"[Alert] Playing flash.mp3 at {int(FLASH_VOLUME*100)}% volume")
+                                        while pygame.mixer.music.get_busy():
+                                            time.sleep(0.1)
                                     except Exception as e:
                                         print(f"Failed to play sound: {e}")
                                     try:
@@ -178,7 +223,11 @@ def handle_json_message(ws, msg_obj):
                                         # Then show Tkinter popup
                                         root = tk.Tk()
                                         root.withdraw()
-                                        messagebox.showinfo(title, desc)
+                                        root.attributes('-topmost', True)
+                                        root.deiconify()
+                                        root.lift()
+                                        root.focus_force()
+                                        messagebox.showinfo(title, desc, parent=root)
                                         root.destroy()
                                     except Exception as e:
                                         print(f"Failed to show popup: {e}")
@@ -195,7 +244,7 @@ def handle_json_message(ws, msg_obj):
 
                 if message_content:
                     try:
-                        system_prompt = "אתה AI שהולך לקבל דיוווח חדשות מתפרץ. עליך להחליט אם הדיווח רלוונטי ל: הודעה מפיקוד העורף או מגוף צבאי אחר בנושא איום לכיוון ישראל (למשל טילים בליסטים, כטבמים או איומים אחרים שמשמעותיים בזמן הקצר). עליך להגיב בJSON באופן הבא: { isFlagged: True/False, MessageTitle: '...', MessageDescription: '...' } התגובה שלך תכלול רק את ה-JSON."
+                        system_prompt = "אתה AI שהולך לקבל דיוווח חדשות מתפרץ. עליך להחליט אם הדיווח רלוונטי ל: הודעה מפיקוד העורף או מגוף צבאי אחר בנושא איום לכיוון ישראל (למשל טילים בליסטים, כטבמים או איומים אחרים שמשמעותיים בזמן הקצר). עליך להגיב בJSON באופן הבא: { isFlagged: True/False, MessageTitle: '...', MessageDescription: '...' } התגובה שלך תכלול רק את ה-JSON. אם isFlagged הוא False, השאר את הערכים של MessageTitle ו-MessageDescription עם סטרינג ריק."
                         user_prompt = f"New news report: {message_content}"
                         response = client.chat.completions.create(
                             messages=[
@@ -210,7 +259,7 @@ def handle_json_message(ws, msg_obj):
                             model=deployment
                         )
                         ai_content = response.choices[0].message.content
-                        print(f"AI Response: {ai_content}")
+                        rtl_print(f"AI Response: {ai_content}")
                         ai_content = ai_content.strip()
                         if ai_content.startswith('```json'):
                             ai_content = ai_content[len('```json'):].strip()
@@ -220,16 +269,33 @@ def handle_json_message(ws, msg_obj):
                             ai_content = ai_content[:-len('```')].strip()
                         # Fix common JSON issues from AI output
                         ai_content = ai_content.replace("True", "true").replace("False", "false")
+                        # Escape unescaped double quotes inside string values (e.g., כטב"מים)
+                        import re
+                        def escape_inner_quotes(s):
+                            # Only escape quotes inside values, not keys or delimiters
+                            def replacer(match):
+                                inner = match.group(0)
+                                # Replace unescaped double quotes with escaped
+                                return inner.replace('"', '\\"')
+                            # Regex: find ": "..." (value) and escape inner quotes
+                            return re.sub(r':\s*"([^"]*?)(?<!\\)"([^"]*?)"', lambda m: ': "' + m.group(1).replace('"', '\\"') + '"' + m.group(2).replace('"', '\\"') + '"', s)
+                        ai_content = escape_inner_quotes(ai_content)
                         try:
                             result = json.loads(ai_content)
                         except Exception as e:
-                            print(f"[JSON ERROR] Could not parse AI response: {ai_content}")
-                            print(f"[JSON ERROR] Exception: {e}")
+                            rtl_print(f"[JSON ERROR] Could not parse AI response: {ai_content}")
+                            rtl_print(f"[JSON ERROR] Exception: {e}")
                             return
                         if result.get("isFlagged"):
-                            print('CRITICAL NEWS DETECTED!')
+                            rtl_print('CRITICAL NEWS DETECTED!')
                             try:
-                                playsound('flash.mp3')
+                                pygame.mixer.init()
+                                pygame.mixer.music.set_volume(FLASH_VOLUME)
+                                pygame.mixer.music.load('flash.mp3')
+                                pygame.mixer.music.play()
+                                print(f"[Alert] Playing flash.mp3 at {int(FLASH_VOLUME*100)}% volume")
+                                while pygame.mixer.music.get_busy():
+                                    time.sleep(0.1)
                             except Exception as e:
                                 print(f"Failed to play sound: {e}")
                             try:
@@ -244,7 +310,11 @@ def handle_json_message(ws, msg_obj):
                                 # Then show Tkinter popup
                                 root = tk.Tk()
                                 root.withdraw()
-                                messagebox.showinfo(title, desc)
+                                root.attributes('-topmost', True)
+                                root.deiconify()
+                                root.lift()
+                                root.focus_force()
+                                messagebox.showinfo(title, desc, parent=root)
                                 root.destroy()
                             except Exception as e:
                                 print(f"Failed to show popup: {e}")
